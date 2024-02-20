@@ -1,22 +1,3 @@
-"""
-    TRACLUS: A Trajectory Clustering Algorithm (A Partition and Group Framework)
-    Implemented for Python 3
-
-    This is an implementation of the TRACLUS algorithm as described in the paper:
-    "Trajectory Clustering: A Partition-and-Group Framework"
-    by Lee, Han, & Whang (2007) [http://hanj.cs.illinois.edu/pdf/sigmod07_jglee.pdf]
-
-    Implementation Author: Adriel Isaiah V. Amoguis (De La Salle University)
-    Implementation Date: 2023-03-19
-
-    This implementation was done as part of the algorithms required for the implementation author's
-    undergraduate thesis. The implementation is not guaranteed to be bug-free and may not be optimized
-    for certain use-cases. The implementation author is not responsible for any damages caused by the
-    use of this implementation. Use at your own risk. End-users are encouraged to examine the code
-    in the case of any issues. If you find any bugs, please report them to the implementation author
-    via the repository's issues page on GitHub.
-"""
-
 import argparse
 import numpy as np
 from sklearn.cluster import OPTICS
@@ -56,6 +37,8 @@ def save_results(trajectories, partitions, segments, dist_matrix, clusters, clus
     with open(filepath, 'wb') as f:
         pickle.dump(results, f)
 
+
+# ? Esta funcion no es usada mas que para preprocesado de los datos
 def sub_sample_trajectory(trajectory, sample_n=30):
     """
         Sub sample a trajectory to a given number of points.
@@ -68,6 +51,8 @@ def sub_sample_trajectory(trajectory, sample_n=30):
     include = np.linspace(0, trajectory.shape[0]-1, sample_n, dtype=np.int32)
     return trajectory[include]
 
+# Usado para calcular la distancia entre puntos en una trayectoria.
+# Tampoco se usa durante la ejecucion del algoritmo traclus
 def calculate_line_euclidean_length(line):
     """
         Calculate the euclidean length of a all points in the line.
@@ -80,6 +65,7 @@ def calculate_line_euclidean_length(line):
 
     return total_length
 
+# ! Funcion utilizada para calcular la distancia perpendicular y paralela entre dos lineas
 def get_point_projection_on_line(point, line):
     """
         Get the projection of a point on a line.
@@ -108,6 +94,7 @@ def get_point_projection_on_line(point, line):
 
     return proj
 
+# ! Usada para convertir una particion a una lista de segmentos
 def partition2segments(partition):
     """
         Convert a partition to a list of segments.
@@ -245,7 +232,8 @@ def distance(l1, l2, directional=True, w_perpendicular=1, w_parallel=1, w_angula
 
     return (w_perpendicular * perpendicular_distance) + (w_parallel * parallel_distance) + (w_angular * angular_distance)
 
-# Minimum Description Length
+# ! Minimum Description Length (MDL)
+# ! Identifica puntos significativos en las trayectorias donde ocurren cambios notables en el movimiento, lo cual puede indicar un cambio de comportamiento o dirección.
 def minimum_desription_length(start_idx, curr_idx, trajectory, w_angular=1, w_perpendicular=1, par=True, directional=True):
     """
         Calculate the minimum description length.
@@ -265,6 +253,7 @@ def minimum_desription_length(start_idx, curr_idx, trajectory, w_angular=1, w_pe
         return LH + LDH
     return LH
 
+# ? Esta funcion tampoco se usa durante la ejecucion del algoritmo traclus
 # Slope to angle in degrees
 def slope_to_angle(slope, degrees=True):
     """
@@ -296,6 +285,7 @@ def get_average_direction_slope(line_list):
     # Get the average slope
     return np.mean(slopes)
 
+# ? Otra funcion que sirve para preprocesar los datos, no es necesaria durante la ejecucion del algoritmo traclus
 # Trajectory Smoothing
 def smooth_trajectory(trajectory, window_size=5):
     """
@@ -326,206 +316,214 @@ def smooth_trajectory(trajectory, window_size=5):
 
     return smoothed_trajectory
 
-# Get Distance Matrix
+# ! Funcion clave en el rendimento del algoritmo, se encarga de particionar las trayectorias
 def get_distance_matrix(partitions, directional=True, w_perpendicular=1, w_parallel=1, w_angular=1, progress_bar=False):
-    # Create Distance Matrix between all trajectories
+    """
+    Calcula la matriz de distancias entre todas las particiones de trayectorias.
+    """
+    # Determina el número total de particiones para dimensionar la matriz de distancias.
     n_partitions = len(partitions)
+    # Inicializa la matriz de distancias con ceros, con tamaño n_partitions x n_partitions.
     dist_matrix = np.zeros((n_partitions, n_partitions))
+    
+    # Itera sobre todas las combinaciones posibles de particiones para calcular las distancias.
     for i in range(n_partitions):
-        if progress_bar: print(f'Progress: {i+1}/{n_partitions}', end='\r')
+        if progress_bar: print(f'Progreso: {i+1}/{n_partitions}', end='\r')
         for j in range(i+1):
+            # Calcula la distancia entre la partición i y la partición j usando la función de distancia definida.
+            # La función de distancia considera las ponderaciones para distancias perpendiculares, paralelas y angulares,
+            # así como la orientación direccional si es relevante.
             dist_matrix[i,j] = dist_matrix[j,i] = distance(partitions[i], partitions[j], directional=directional, w_perpendicular=w_perpendicular, w_parallel=w_parallel, w_angular=w_angular)
-            print(f'Progress: {i+1}/{n_partitions}', end='\r')
+            if progress_bar: print(f'Progreso: {i+1}/{n_partitions}', end='\r')
 
-    # Main Diagonal
+    # Asegura que los valores en la diagonal principal sean cero, pues es la distancia de una partición a sí misma.
     for i in range(n_partitions):
         dist_matrix[i,i] = 0
 
-    # Check for nans and warn if any are found
+    # Verifica si hay valores NaN en la matriz de distancias, lo cual puede indicar un error en el cálculo.
     if np.isnan(dist_matrix).any():
-        warnings.warn("Distance matrix contains NaN values")
-    
-        # Replace the nans with the maximum value
+        warnings.warn("La matriz de distancias contiene valores NaN")
+        # Reemplaza los valores NaN con un valor máximo para evitar errores en el proceso de agrupamiento.
         dist_matrix[np.isnan(dist_matrix)] = 9999999
 
+    # Devuelve la matriz de distancias calculada.
     return dist_matrix
 
 #############################################
 
+# ! El particionamiento de las trayectorias se lleva a cabo teniendo en cuanta los puntos significativos de la trayectoria
 def partition(trajectory, directional=True, progress_bar=False, w_perpendicular=1, w_angular=1):
     """
-        Partition a trajectory into segments.
+    Particiona una trayectoria en segmentos significativos, buscando los puntos donde 
+    la trayectoria cambia de dirección o comportamiento de manera notable.
     """
 
-    # Ensure that the trajectory is a numpy array of shape (n, 2)
+    # Verifica que la trayectoria sea un arreglo de NumPy con la forma correcta (n, 2),
+    # donde n es el número de puntos y 2 representa las coordenadas x, y de cada punto.
     if not isinstance(trajectory, np.ndarray):
-        raise TypeError("Trajectory must be a numpy array")
+        raise TypeError("La trayectoria debe ser un arreglo de NumPy")
     elif trajectory.shape[1] != 2:
-        raise ValueError("Trajectory must be a numpy array of shape (n, 2)")
+        raise ValueError("La trayectoria debe tener la forma (n, 2)")
 
-    # Initialize the characteristic points, add the first point as a characteristic point
-    cp_indices = []
-    cp_indices.append(0)
+    # Inicializa la lista de índices de puntos característicos, comenzando con el primer punto de la trayectoria.
+    cp_indices = [0]
 
+    # Longitud total de la trayectoria para controlar el avance del algoritmo.
     traj_len = trajectory.shape[0]
-    start_idx = 0
+    start_idx = 0  # Índice inicial para comenzar la evaluación de segmentos.
     
-    length = 1
-    while start_idx + length < traj_len:
-        if progress_bar:
+    length = 1  # Inicia la longitud del segmento a evaluar.
+    while start_idx + length < traj_len:  # Mientras no se haya recorrido toda la trayectoria.
+        if progress_bar:  # Si se activa la barra de progreso, muestra el porcentaje completado.
             print(f'\r{round(((start_idx + length) / traj_len) * 100, 2)}%', end='')
-        # print(f'Current Index: {start_idx + length}, Trajectory Length: {traj_len}')
-        curr_idx = start_idx + length
-        # print(start_idx, curr_idx)
-        # print(f"Current Index: {curr_idx}, Current point: {trajectory[curr_idx]}")
+        
+        curr_idx = start_idx + length  # Define el índice actual hasta donde se evalúa el segmento.
+
+        # Calcula el costo de MDL para el segmento actual con y sin considerar una partición adicional.
         cost_par = minimum_desription_length(start_idx, curr_idx, trajectory, w_angular=w_angular, w_perpendicular=w_perpendicular, directional=directional)
         cost_nopar = minimum_desription_length(start_idx, curr_idx, trajectory, par=False, directional=directional)
-        # print(f'Cost with partition: {cost_par}, Cost without partition: {cost_nopar}')
-        if cost_par > cost_nopar:
-            # print(f"Added characteristic point: {trajectory[curr_idx-1]} with index {curr_idx-1}")
-            cp_indices.append(curr_idx-1)
-            start_idx = curr_idx-1
-            length = 1
+
+        if cost_par > cost_nopar:  # Si el costo con partición es mayor que sin ella,
+            cp_indices.append(curr_idx-1)  # añade el último punto del segmento a los índices de puntos característicos.
+            start_idx = curr_idx-1  # Actualiza el índice inicial para la próxima evaluación.
+            length = 1  # Reinicia la longitud del segmento a evaluar.
         else:
-            length += 1
+            length += 1  # Si no, incrementa la longitud del segmento a evaluar.
     
-    # Add last point to characteristic points
+    # Añade el último punto de la trayectoria a los puntos característicos.
     cp_indices.append(len(trajectory) - 1)
-    # print(cp_indices)
     
+    # Devuelve los puntos de la trayectoria correspondientes a los índices de puntos característicos.
     return np.array([trajectory[i] for i in cp_indices])
 
-# Get Representative Trajectory
+
+# ! Representa la trayectoria promedio de un cluster
 def get_representative_trajectory(lines, min_lines=3):
     """
-        Get the sweeping line vector average.
+    Obtiene la trayectoria representativa a partir de un conjunto de líneas.
     """
-    # Get the average rotation matrix for all the lines
+    # Calcula la pendiente promedio de todas las líneas para obtener una dirección general de movimiento.
     average_slope = get_average_direction_slope(lines)
+    # Convierte esta pendiente en una matriz de rotación para alinear las líneas con el eje x.
     rotation_matrix = slope_to_rotation_matrix(average_slope)
 
-    # Rotate all lines such that they are parallel to the x-axis
+    # Rota todas las líneas para que queden paralelas al eje x.
     rotated_lines = []
     for line in lines:
         rotated_lines.append(np.matmul(line, rotation_matrix.T))
 
-    # Let starting_and_ending_points be the set of all starting and ending points of the lines
+    # Recolecta todos los puntos de inicio y fin de las líneas rotadas.
     starting_and_ending_points = []
     for line in rotated_lines:
         starting_and_ending_points.append(line[0])
         starting_and_ending_points.append(line[-1])
     starting_and_ending_points = np.array(starting_and_ending_points)
 
-    # Sort the starting and ending points by their x-coordinate
+    # Ordena estos puntos por su coordenada x para preparar el algoritmo de línea de barrido.
     starting_and_ending_points = starting_and_ending_points[starting_and_ending_points[:, 0].argsort()]
 
-    # Perform the sweeping line algorithm
+    # Inicia el algoritmo de línea de barrido para encontrar puntos representativos.
     representative_points = []
     for p in starting_and_ending_points:
-        # Let num_p be the number of lines that contain the x-value of p
+        # Cuenta cuántas líneas contienen el valor x del punto actual 'p'.
         num_p = 0
         for line in rotated_lines:
-            # Sort the line points by their x-coordinate
             point_sorted_line = line[line[:, 0].argsort()]
-            # print(line[0, 0], p[0], line[-1, 0])
             if point_sorted_line[0, 0] <= p[0] <= point_sorted_line[-1, 0]:
                 num_p += 1
 
-        # If num_p is greater than or equal to min_lines, then add p to representative_points
+        # Si el número de líneas es igual o mayor a min_lines, calcula el valor y promedio para 'p'.
         if num_p >= min_lines:
-            # Compute the average y-value of all lines that contain the x-value of p
             y_avg = 0
             for line in rotated_lines:
                 point_sorted_line = line[line[:, 0].argsort()]
                 if point_sorted_line[0, 0] <= p[0] <= point_sorted_line[-1, 0]:
                     y_avg += (point_sorted_line[0, 1] + point_sorted_line[-1, 1]) / 2
-                    # print((point_sorted_line[0, 1] + point_sorted_line[-1, 1]) / 2)
-                    # y_avg += line[np.argmin(np.abs(line[:, 0] - p[0])), 1]
             y_avg /= num_p
-            # Add the p and its average y-value to representative_points
+            # Añade el punto 'p' y su valor y promedio a los puntos representativos.
             representative_points.append(np.array([p[0], y_avg]))
 
-    # Early return if there are no representative points
+    # Si no se encontraron puntos representativos, retorna un arreglo vacío.
     if len(representative_points) == 0:
-        warnings.warn("WARNING: No representative points were found.")
+        warnings.warn("ADVERTENCIA: No se encontraron puntos representativos.")
         return np.array([])
 
-    # Undo the rotation for the generated representative points
+    # Deshace la rotación de los puntos representativos para alinearlos con la orientación original de las líneas.
     representative_points = np.array(representative_points)
     representative_points = np.matmul(representative_points, np.linalg.inv(rotation_matrix).T)
     
+    # Retorna los puntos representativos, que juntos forman la trayectoria representativa del cluster.
     return representative_points
+
 
 
 def traclus(trajectories, max_eps=None, min_samples=10, directional=True, use_segments=True, clustering_algorithm=OPTICS, mdl_weights=[1,1,1], d_weights=[1,1,1], progress_bar=False):
     """
-        Trajectory Clustering Algorithm
+    Implementación del algoritmo TRACLUS para el agrupamiento de trayectorias.
     """
-    # Ensure that the trajectories are a list of numpy arrays of shape (n, 2)
+    # Verificar que las trayectorias sean una lista de arreglos NumPy con la forma correcta (n, 2)
     if not isinstance(trajectories, list):
-        raise TypeError("Trajectories must be a list")
+        raise TypeError("Las trayectorias deben ser una lista")
     for trajectory in trajectories:
         if not isinstance(trajectory, np.ndarray):
-            raise TypeError("Trajectories must be a list of numpy arrays")
-        elif len(trajectory.shape) != 2:
-            raise ValueError("Trajectories must be a list of numpy arrays of shape (n, 2)")
-        elif trajectory.shape[1] != 2:
-            raise ValueError("Trajectories must be a list of numpy arrays of shape (n, 2)")
+            raise TypeError("Las trayectorias deben ser una lista de arreglos NumPy")
+        elif len(trajectory.shape) != 2 or trajectory.shape[1] != 2:
+            raise ValueError("Las trayectorias deben tener la forma (n, 2)")
 
-    # Partition the trajectories
+    # Particionar las trayectorias
     if progress_bar:
-        print("Partitioning trajectories...")
+        print("Particionando trayectorias...")
     partitions = []
-    i = 0
-    for trajectory in trajectories:
+    for i, trajectory in enumerate(trajectories):
         if progress_bar:
-            print(f"\rTrajectory {i + 1}/{len(trajectories)}", end='')
-            i += 1
+            print(f"\rTrayectoria {i + 1}/{len(trajectories)}", end='')
+        # Particionar cada trayectoria usando la función de partición, con los pesos especificados
         partitions.append(partition(trajectory, directional=directional, progress_bar=False, w_perpendicular=mdl_weights[0], w_angular=mdl_weights[2]))
     if progress_bar:
         print()
 
-    # Get the segments for each partition
+    # Convertir las particiones en segmentos si es necesario
+    # ! Deveria ser siempre necesario por como funciona TRACLUS no se en que momento no lo seria
     segments = []
     if use_segments:
         if progress_bar:
-            print("Converting partitioned trajectories to segments...")
-        i = 0
+            print("Convirtiendo trayectorias particionadas en segmentos...")
         for parts in partitions:
-            if progress_bar:
-                print(f"\rPartition {i + 1}/{len(parts)}", end='')
+            # Convertir cada partición en segmentos de línea
             segments += partition2segments(parts)
     else:
         segments = partitions
 
-    # Get distance matrix
+    # Calcular la matriz de distancias entre los segmentos, calcula todas las distancias antes de empezar a agrupar
+    # ! Aqui radica gran parte de la complejidad ya que por cada segmento que añadas este tendra que tener la distancia con todos los anteriores
+    if progress_bar:
+        print("Calculando matriz de distancias...")
     dist_matrix = get_distance_matrix(segments, directional=directional, w_perpendicular=d_weights[0], w_parallel=d_weights[1], w_angular=d_weights[2], progress_bar=progress_bar)
 
-    # Group the partitions
+    # Agrupar las particiones usando el algoritmo de agrupamiento especificado, en esta caso OPTICS
     if progress_bar:
-        print("Grouping partitions...")
+        print("Agrupando particiones...")
     clusters = []
-    clustering_model = None
-    if max_eps is not None:
-        clustering_model = clustering_algorithm(max_eps=max_eps, min_samples=min_samples)
-    else:
-        clustering_model = clustering_algorithm(min_samples=min_samples)
+    clustering_model = clustering_algorithm(max_eps=max_eps, min_samples=min_samples) if max_eps is not None else clustering_algorithm(min_samples=min_samples)
     cluster_assignments = clustering_model.fit_predict(dist_matrix)
     for c in range(min(cluster_assignments), max(cluster_assignments) + 1):
+        # Crear clusters basados en las asignaciones del algoritmo de agrupamiento
         clusters.append([segments[i] for i in range(len(segments)) if cluster_assignments[i] == c])
 
     if progress_bar:
         print()
 
-    # Get the representative trajectories
+    # Obtener las trayectorias representativas de cada cluster
     if progress_bar:
-        print("Getting representative trajectories...")
+        print("Obteniendo trayectorias representativas...")
     representative_trajectories = []
     for cluster in clusters:
+        # Calcular la trayectoria representativa para cada cluster
         representative_trajectories.append(get_representative_trajectory(cluster))
     if progress_bar:
         print()
 
+    # Devolver los resultados del proceso de agrupamiento
     return partitions, segments, dist_matrix, clusters, cluster_assignments, representative_trajectories
 
 # Create the script version that takes in a file path for inputs
